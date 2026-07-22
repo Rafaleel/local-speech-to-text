@@ -1,0 +1,44 @@
+# Python / Bytecode
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual Environments
+.venv/
+venv/
+env/
+ENV/
+env.bak/
+venv.bak/
+
+# SQLite Database (Local user data)
+*.db
+*.sqlite
+*.sqlite3
+transcriptions.db
+
+# Test Caches and Coverage
+.pytest_cache/
+.coverage
+htmlcov/
+.nox/
+.tox/
+
+# IDEs and Code Editors
+.vscode/
+.idea/
+*.swp
+*.swo
+*.sublime-project
+*.sublime-workspace
+
+# Logs and Temporary Audio Files
+*.log
+*.wav
+*.mp3
+*.flac
+*.ogg
+
+# Operating System Files
+.DS_Store
+Thumbs.db
