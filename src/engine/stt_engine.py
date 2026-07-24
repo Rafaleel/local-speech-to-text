@@ -2,10 +2,11 @@ import ctypes
 import gc
 import glob
 import os
+import threading
 import time
 from typing import Optional
 import numpy as np
-from PySide6.QtCore import QThread, QTimer, Signal
+from PySide6.QtCore import QThread, Signal
 
 
 def _load_nvidia_libraries():
@@ -33,6 +34,7 @@ class ModelManager:
     _loaded_model = None
     _current_key = None
     _active_device = "cpu"
+    _lock = threading.Lock()
 
     @classmethod
     def get_model(
@@ -41,9 +43,10 @@ class ModelManager:
         device: str = "cuda",
         compute_type: str = "float16"
     ):
-        key = (model_size, device, compute_type)
-        if cls._loaded_model is not None and cls._current_key == key:
-            return cls._loaded_model, cls._active_device
+        with cls._lock:
+            key = (model_size, device, compute_type)
+            if cls._loaded_model is not None and cls._current_key == key:
+                return cls._loaded_model, cls._active_device
 
         from faster_whisper import WhisperModel
 
@@ -89,19 +92,21 @@ class ModelManager:
 
     @classmethod
     def unload_model(cls, reason: str = ""):
-        if cls._loaded_model is not None:
-            del cls._loaded_model
-            cls._loaded_model = None
-            cls._current_key = None
-            cls._active_device = "cpu"
-            gc.collect()
-            try:
-                import torch
-                if torch.cuda.is_available():
-                    torch.cuda.empty_cache()
-            except Exception:
-                pass
-            print(f"[STTEngine] VRAM/Memory released. {reason}", flush=True)
+        with cls._lock:
+            if cls._loaded_model is not None:
+                del cls._loaded_model
+                cls._loaded_model = None
+                cls._current_key = None
+                cls._active_device = "cpu"
+                gc.collect()
+                try:
+                    import torch
+                    if torch.cuda.is_available():
+                        torch.cuda.empty_cache()
+                except Exception:
+                    pass
+                print(
+                    f"[STTEngine] VRAM/Memory released. {reason}", flush=True)
 
 
 class TranscribeWorker(QThread):

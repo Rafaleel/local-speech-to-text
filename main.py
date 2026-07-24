@@ -48,6 +48,14 @@ class VoiceToTextApp(QObject):
             lambda: ModelManager.unload_model("VRAM freed after inactivity.")
         )
 
+        # Status reset timer to prevent overlapping status updates
+        self.status_reset_timer = QTimer(self)
+        self.status_reset_timer.setSingleShot(True)
+        self.status_reset_timer.timeout.connect(
+            lambda: self.floating_pill.set_status(
+                "idle", "Pronto (Ctrl+Espaço)")
+        )
+
         # Connect UI Signals
         self.floating_pill.open_history_requested.connect(
             self.show_history_window
@@ -98,6 +106,7 @@ class VoiceToTextApp(QObject):
             return
 
         self.vram_unload_timer.stop()
+        self.status_reset_timer.stop()
         self.recorder.start_recording()
         self.floating_pill.set_status("recording", "Gravando...")
 
@@ -136,6 +145,9 @@ class VoiceToTextApp(QObject):
         self.transcribe_worker.failed_signal.connect(
             self._on_transcription_failed
         )
+        self.transcribe_worker.status_signal.connect(
+            lambda msg: self.floating_pill.set_status("transcribing", msg)
+        )
         self.transcribe_worker.start()
 
     @Slot(str, str, float)
@@ -170,22 +182,14 @@ class VoiceToTextApp(QObject):
             self.floating_pill.set_status("idle", "Nenhum texto detectado")
 
         # Reset pill status back to idle after 3 seconds
-        QTimer.singleShot(
-            3000,
-            lambda: self.floating_pill.set_status(
-                "idle", "Pronto (Ctrl+Espaço)")
-        )
+        self.status_reset_timer.start(3000)
         self._manage_vram_offload()
 
     @Slot(str)
     def _on_transcription_failed(self, error_msg: str):
         self.floating_pill.set_status("error", "Erro na transcrição")
         print(f"[Main] Failure: {error_msg}", flush=True)
-        QTimer.singleShot(
-            4000,
-            lambda: self.floating_pill.set_status(
-                "idle", "Pronto (Ctrl+Espaço)")
-        )
+        self.status_reset_timer.start(4000)
         self._manage_vram_offload()
 
     def _manage_vram_offload(self):
@@ -193,7 +197,8 @@ class VoiceToTextApp(QObject):
         if policy == "never":
             return
         elif policy == "immediate":
-            ModelManager.unload_model("VRAM freed immediately after transcription.")
+            ModelManager.unload_model(
+                "VRAM freed immediately after transcription.")
         elif policy in ["5s", "15s", "30s"]:
             seconds = int(policy.replace("s", ""))
             self.vram_unload_timer.start(seconds * 1000)

@@ -50,47 +50,50 @@ class GlobalHotkeyListener(QObject):
         self._last_udp_toggle_time = 0.0
 
         # Parse combination into target key objects
-        self.target_keys = self._parse_combination(combination_str)
+        self.target_key_groups = self._parse_combination(combination_str)
+        self.target_keys_flat = set().union(
+            *self.target_key_groups) if self.target_key_groups else set()
 
-    def _parse_combination(self, combo: str) -> set:
-        keys = set()
+    def _parse_combination(self, combo: str) -> list:
+        groups = []
         if not PYNPUT_AVAILABLE or keyboard is None:
-            return keys
+            return groups
         parts = combo.lower().split('+')
         for p in parts:
             p = p.strip()
+            group = set()
             if p in ('<ctrl>', 'ctrl'):
-                keys.add(keyboard.Key.ctrl)
-                keys.add(keyboard.Key.ctrl_l)
-                keys.add(keyboard.Key.ctrl_r)
+                group.add(keyboard.Key.ctrl)
+                group.add(keyboard.Key.ctrl_l)
+                group.add(keyboard.Key.ctrl_r)
             elif p in ('<alt>', 'alt'):
-                keys.add(keyboard.Key.alt)
-                keys.add(keyboard.Key.alt_l)
-                keys.add(keyboard.Key.alt_r)
+                group.add(keyboard.Key.alt)
+                group.add(keyboard.Key.alt_l)
+                group.add(keyboard.Key.alt_r)
             elif p in ('<shift>', 'shift'):
-                keys.add(keyboard.Key.shift)
-                keys.add(keyboard.Key.shift_l)
-                keys.add(keyboard.Key.shift_r)
+                group.add(keyboard.Key.shift)
+                group.add(keyboard.Key.shift_l)
+                group.add(keyboard.Key.shift_r)
             elif p in ('<space>', 'space'):
-                keys.add(keyboard.Key.space)
+                group.add(keyboard.Key.space)
             else:
                 try:
-                    keys.add(keyboard.KeyCode.from_char(p))
+                    group.add(keyboard.KeyCode.from_char(p))
                 except Exception:
                     pass
-        return keys
+            if group:
+                groups.append(group)
+        return groups
 
     def _is_combination_pressed(self) -> bool:
-        if not self.target_keys:
+        if not self.target_key_groups:
             return False
-        has_spc = (
-            keyboard is not None and
-            hasattr(keyboard, "Key") and
-            keyboard.Key.space in self.current_keys
-        ) or ("space" in self.current_keys)
-        return len(self.current_keys.intersection(self.target_keys)) >= 2 or (
-            has_spc and len(self.current_keys) >= 2
-        )
+
+        for group in self.target_key_groups:
+            if not group.intersection(self.current_keys):
+                return False
+
+        return True
 
     def _cancel_hold_stop_timer(self):
         if self._hold_stop_timer is not None:
@@ -141,8 +144,12 @@ class GlobalHotkeyListener(QObject):
             self._toggle_key_latched = False
 
         if self.mode == "hold" and self.is_recording:
-            if key in self.target_keys or not self._is_combination_pressed():
+            if (
+                key in self.target_keys_flat or
+                not self._is_combination_pressed()
+            ):
                 self._cancel_hold_stop_timer()
+
                 self._hold_stop_timer = threading.Timer(
                     0.20, self._confirm_stop_hold
                 )
@@ -191,12 +198,16 @@ class GlobalHotkeyListener(QObject):
     def _udp_listen_loop(self):
         self._udp_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         try:
+            self._udp_socket.setsockopt(
+                socket.SOL_SOCKET, socket.SO_REUSEADDR, 1
+            )
             self._udp_socket.bind(("127.0.0.1", 15324))
             print(
                 "[HotkeyListener] Listening for UDP commands on port 15324 "
                 "(Wayland support)",
                 flush=True
             )
+
         except Exception as e:
             print(
                 f"[HotkeyListener] Failed to start UDP listener: {e}",

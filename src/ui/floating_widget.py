@@ -136,11 +136,14 @@ class FloatingPillWidget(QWidget):
             saved_y = self.db.get_setting("pill_y", "")
             if saved_x and saved_y:
                 try:
-                    self.move(int(saved_x), int(saved_y))
-                    return
+                    sx, sy = int(saved_x), int(saved_y)
+                    if screen.contains(sx, sy):
+                        self.move(sx, sy)
+                        return
                 except ValueError:
                     pass
             self.position_bottom_center()
+
         else:
             self.position_bottom_center()
 
