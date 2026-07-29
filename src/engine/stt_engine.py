@@ -2,6 +2,7 @@ import ctypes
 import gc
 import glob
 import os
+import re
 import threading
 import time
 from typing import Optional
@@ -28,6 +29,35 @@ def _load_nvidia_libraries():
 
 
 _load_nvidia_libraries()
+
+
+def clean_hallucinated_closings(text: str) -> str:
+    """
+    Strips trailing hallucinated closing tokens only when appended
+    to the end of a longer sentence. If the text consists ONLY
+    of the hallucinated phrase, it is preserved.
+    """
+    if not text:
+        return text
+
+    pattern = re.compile(
+        r"(?:\.|\!|\?|\,)?\s*\b(?:tchau|tchau\s+tchau|obrigado|obrigada|"
+        r"inscreva-se(?:\s+no\s+canal)?|subtitles\s+by.*|"
+        r"thanks\s+for\s+watching)[.!?\s]*$",
+        re.IGNORECASE
+    )
+
+    match = pattern.search(text)
+    if not match:
+        return text
+
+    cleaned_text = pattern.sub("", text).strip()
+
+    # If stripping leaves nothing, it was the ONLY content, so we preserve it.
+    if not cleaned_text:
+        return text
+
+    return cleaned_text
 
 
 class ModelManager:
@@ -122,6 +152,7 @@ class TranscribeWorker(QThread):
         device: str = "cuda",
         compute_type: str = "float16",
         vram_offload_policy: str = "never",
+        language: str = "auto",
         initial_prompt: Optional[str] = None
     ):
         super().__init__()
@@ -131,9 +162,8 @@ class TranscribeWorker(QThread):
         self.device = device
         self.compute_type = compute_type
         self.vram_offload_policy = vram_offload_policy
-        self.initial_prompt = initial_prompt or (
-            "Direct transcription in Portuguese and technical English."
-        )
+        self.language = language
+        self.initial_prompt = initial_prompt
 
     def run(self):
         start_time = time.time()
@@ -157,12 +187,25 @@ class TranscribeWorker(QThread):
             )
             self.status_signal.emit(status_msg)
 
+            if self.language == "auto":
+                transcribe_lang = None
+                prompt = self.initial_prompt or (
+                    "Transcreva o áudio no idioma falado sem traduzir. "
+                    "Maintain exact spoken language without translating."
+                )
+            else:
+                transcribe_lang = self.language
+                prompt = self.initial_prompt or (
+                    f"Direct transcription in {self.language}."
+                )
+
             segments, info = model.transcribe(
                 self.audio_data,
                 beam_size=5,
                 task="transcribe",
+                language=transcribe_lang,
                 condition_on_previous_text=False,
-                initial_prompt=self.initial_prompt,
+                initial_prompt=prompt,
                 vad_filter=True,
                 vad_parameters=dict(min_silence_duration_ms=400),
                 no_speech_threshold=0.6
@@ -176,6 +219,7 @@ class TranscribeWorker(QThread):
                 text_parts = [segment.text.strip() for segment in segments]
 
             full_text = " ".join(text_parts).strip()
+            full_text = clean_hallucinated_closings(full_text)
 
             elapsed = time.time() - start_time
             ns_prob = getattr(info, 'no_speech_prob', 0.0)

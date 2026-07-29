@@ -128,6 +128,7 @@ class VoiceToTextApp(QObject):
         device = self.db.get_setting("device", "cuda")
         compute_type = self.db.get_setting("compute_type", "float16")
         vram_policy = self.db.get_setting("vram_offload_policy", "never")
+        language = self.db.get_setting("language", "auto")
 
         # Start background worker thread
         self.transcribe_worker = TranscribeWorker(
@@ -136,7 +137,8 @@ class VoiceToTextApp(QObject):
             model_size=model_size,
             device=device,
             compute_type=compute_type,
-            vram_offload_policy=vram_policy
+            vram_offload_policy=vram_policy,
+            language=language
         )
 
         self.transcribe_worker.finished_signal.connect(

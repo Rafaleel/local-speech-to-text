@@ -43,6 +43,10 @@ class DatabaseManager:
                 # Default settings if not previously set
                 cursor.execute(
                     "INSERT OR IGNORE INTO settings (key, value) VALUES "
+                    "('language', 'auto');"
+                )
+                cursor.execute(
+                    "INSERT OR IGNORE INTO settings (key, value) VALUES "
                     "('hotkey_mode', 'toggle');"
                 )
                 cursor.execute(

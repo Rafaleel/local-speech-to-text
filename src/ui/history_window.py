@@ -79,6 +79,20 @@ class HistoryWindow(QDialog):
         settings_layout.setContentsMargins(12, 12, 12, 12)
         settings_layout.setSpacing(14)
 
+        # Language Selection
+        lbl_language = QLabel("<b>Idioma da Transcrição:</b>", self)
+        self.combo_language = QComboBox(self)
+        self.combo_language.addItem(
+            "Automático (Detectar idioma do áudio - Padrão)", "auto")
+        self.combo_language.addItem("Português (PT)", "pt")
+        self.combo_language.addItem("Inglês (EN)", "en")
+        self.combo_language.addItem("Espanhol (ES)", "es")
+
+        current_language = self.db.get_setting("language", "auto")
+        index_lang = self.combo_language.findData(current_language)
+        if index_lang >= 0:
+            self.combo_language.setCurrentIndex(index_lang)
+
         # Hotkey Mode
         lbl_mode = QLabel("<b>Modo de Ativação do Atalho:</b>", self)
         self.combo_mode = QComboBox(self)
@@ -196,6 +210,8 @@ class HistoryWindow(QDialog):
         btn_save_settings.setObjectName("PrimaryButton")
         btn_save_settings.clicked.connect(self._save_settings)
 
+        settings_layout.addWidget(lbl_language)
+        settings_layout.addWidget(self.combo_language)
         settings_layout.addWidget(lbl_mode)
         settings_layout.addWidget(self.combo_mode)
         settings_layout.addWidget(lbl_device)
@@ -320,6 +336,7 @@ class HistoryWindow(QDialog):
             self.refresh_history()
 
     def _save_settings(self):
+        language = self.combo_language.currentData()
         mode = self.combo_mode.currentData()
         device = self.combo_device.currentData()
         model = self.combo_model.currentData()
@@ -327,6 +344,7 @@ class HistoryWindow(QDialog):
         position = self.combo_position.currentData()
         clipboard = "true" if self.chk_clipboard.isChecked() else "false"
 
+        self.db.set_setting("language", language)
         self.db.set_setting("hotkey_mode", mode)
         self.db.set_setting("device", device)
         self.db.set_setting("model_size", model)
