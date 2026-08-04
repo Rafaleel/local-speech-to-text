@@ -65,6 +65,10 @@ class DatabaseManager:
                     "INSERT OR IGNORE INTO settings (key, value) VALUES "
                     "('copy_to_clipboard', 'true');"
                 )
+                cursor.execute(
+                    "INSERT OR IGNORE INTO settings (key, value) VALUES "
+                    "('sound_effects', 'true');"
+                )
 
             conn.commit()
 

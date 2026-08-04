@@ -38,6 +38,8 @@ htmlcov/
 *.mp3
 *.flac
 *.ogg
+!src/audio/*.wav
+
 
 # Operating System Files
 .DS_Store

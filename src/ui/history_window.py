@@ -205,6 +205,26 @@ class HistoryWindow(QDialog):
         clip_layout.addWidget(self.chk_clipboard)
         clip_layout.addWidget(lbl_clip, 1)
 
+        # Audio Sound Effects
+        sounds_layout = QHBoxLayout()
+        self.chk_sounds = QCheckBox(self)
+        is_sounds = self.db.get_setting(
+            "sound_effects", "true").lower() == "true"
+        self.chk_sounds.setChecked(is_sounds)
+
+        lbl_sounds = QLabel(
+            "Tocar efeitos sonoros ao iniciar/parar/cancelar gravação",
+            self
+        )
+
+        lbl_sounds.setWordWrap(True)
+        lbl_sounds.setStyleSheet("color: #F8FAFC; font-size: 13px;")
+        lbl_sounds.setCursor(Qt.CursorShape.PointingHandCursor)
+        lbl_sounds.mousePressEvent = lambda _: self.chk_sounds.toggle()
+
+        sounds_layout.addWidget(self.chk_sounds)
+        sounds_layout.addWidget(lbl_sounds, 1)
+
         # Save Button
         btn_save_settings = QPushButton("Salvar Configurações", self)
         btn_save_settings.setObjectName("PrimaryButton")
@@ -223,6 +243,7 @@ class HistoryWindow(QDialog):
         settings_layout.addWidget(lbl_position)
         settings_layout.addWidget(self.combo_position)
         settings_layout.addLayout(clip_layout)
+        settings_layout.addLayout(sounds_layout)
         settings_layout.addWidget(btn_save_settings)
         settings_layout.addStretch()
 
@@ -343,6 +364,7 @@ class HistoryWindow(QDialog):
         vram_policy = self.combo_vram.currentData()
         position = self.combo_position.currentData()
         clipboard = "true" if self.chk_clipboard.isChecked() else "false"
+        sounds = "true" if self.chk_sounds.isChecked() else "false"
 
         self.db.set_setting("language", language)
         self.db.set_setting("hotkey_mode", mode)
@@ -351,6 +373,7 @@ class HistoryWindow(QDialog):
         self.db.set_setting("vram_offload_policy", vram_policy)
         self.db.set_setting("pill_position", position)
         self.db.set_setting("copy_to_clipboard", clipboard)
+        self.db.set_setting("sound_effects", sounds)
 
         QMessageBox.information(
             self, "Sucesso", "Configurações salvas com sucesso!")

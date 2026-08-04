@@ -8,6 +8,9 @@ if sys.platform == "linux" and os.environ.get("WAYLAND_DISPLAY"):
 from PySide6.QtCore import QObject, QTimer, Slot
 from PySide6.QtWidgets import QApplication
 
+from src.audio.audio_cues import (
+    play_start_sound, play_stop_sound, play_cancel_sound
+)
 from src.db.database import DatabaseManager
 from src.audio.recorder import AudioRecorder
 from src.engine.stt_engine import TranscribeWorker, ModelManager
@@ -30,6 +33,15 @@ class VoiceToTextApp(QObject):
         self.recorder = AudioRecorder()
         self.transcribe_worker: TranscribeWorker = None
 
+        # Status reset timer to manage pill status timeouts safely
+        self.status_reset_timer = QTimer(self)
+        self.status_reset_timer.setSingleShot(True)
+        self.status_reset_timer.timeout.connect(
+            lambda: self.floating_pill.set_status(
+                "idle", "Pronto (Ctrl+Espaço)"
+            )
+        )
+
         # UI Components
         self.floating_pill = FloatingPillWidget(db_manager=self.db)
         self.history_window = HistoryWindow(self.db)
@@ -46,14 +58,6 @@ class VoiceToTextApp(QObject):
         self.vram_unload_timer.setSingleShot(True)
         self.vram_unload_timer.timeout.connect(
             lambda: ModelManager.unload_model("VRAM freed after inactivity.")
-        )
-
-        # Status reset timer to prevent overlapping status updates
-        self.status_reset_timer = QTimer(self)
-        self.status_reset_timer.setSingleShot(True)
-        self.status_reset_timer.timeout.connect(
-            lambda: self.floating_pill.set_status(
-                "idle", "Pronto (Ctrl+Espaço)")
         )
 
         # Connect UI Signals
@@ -77,6 +81,7 @@ class VoiceToTextApp(QObject):
         self.hotkey_listener = GlobalHotkeyListener(
             on_start_recording=self.start_recording,
             on_stop_recording=self.stop_recording,
+            on_cancel_recording=self.cancel_recording,
             mode=hotkey_mode,
             combination_str="<ctrl>+<space>"
         )
@@ -110,9 +115,28 @@ class VoiceToTextApp(QObject):
         self.recorder.start_recording()
         self.floating_pill.set_status("recording", "Gravando...")
 
+        if self.db.get_setting("sound_effects", "true").lower() == "true":
+            play_start_sound()
+
+    def cancel_recording(self):
+        if not self.recorder.is_recording:
+            return
+
+        self.recorder.stop_recording()
+        self.floating_pill.set_status("idle", "Gravação cancelada")
+        print("[Main] Recording cancelled by user (ESC).", flush=True)
+
+        if self.db.get_setting("sound_effects", "true").lower() == "true":
+            play_cancel_sound()
+
+        self.status_reset_timer.start(2500)
+
     def stop_recording(self):
         if not self.recorder.is_recording:
             return
+
+        if self.db.get_setting("sound_effects", "true").lower() == "true":
+            play_stop_sound()
 
         audio_data = self.recorder.stop_recording()
 

@@ -16,11 +16,13 @@ except Exception as e:
 class GlobalHotkeyListener(QObject):
     start_recording_signal = Signal()
     stop_recording_signal = Signal()
+    cancel_recording_signal = Signal()
 
     def __init__(
         self,
         on_start_recording: Optional[Callable[[], None]] = None,
         on_stop_recording: Optional[Callable[[], None]] = None,
+        on_cancel_recording: Optional[Callable[[], None]] = None,
         mode: str = "toggle",
         combination_str: str = "<ctrl>+<space>"
     ):
@@ -33,8 +35,11 @@ class GlobalHotkeyListener(QObject):
             self.start_recording_signal.connect(on_start_recording)
         if on_stop_recording:
             self.stop_recording_signal.connect(on_stop_recording)
+        if on_cancel_recording:
+            self.cancel_recording_signal.connect(on_cancel_recording)
 
         self.mode = mode
+
         self.combination_str = combination_str
 
         self.is_recording = False
@@ -115,10 +120,23 @@ class GlobalHotkeyListener(QObject):
             print("[HotkeyListener] Emitting STOP signal", flush=True)
             self.stop_recording_signal.emit()
 
+    def _trigger_cancel(self):
+        if self.is_recording:
+            self._cancel_hold_stop_timer()
+            self.is_recording = False
+            self._toggle_key_latched = False
+            print("[HotkeyListener] Emitting CANCEL signal", flush=True)
+            self.cancel_recording_signal.emit()
+
     def _on_press(self, key):
+        if key == keyboard.Key.esc and self.is_recording:
+            self._trigger_cancel()
+            return
+
         self.current_keys.add(key)
 
         if self._is_combination_pressed():
+
             if self.mode == "toggle":
                 if not self._toggle_key_latched:
                     self._toggle_key_latched = True
@@ -252,6 +270,9 @@ class GlobalHotkeyListener(QObject):
                     self._cancel_hold_stop_timer()
                     if self.is_recording:
                         self._trigger_stop()
+                elif command == "CANCEL":
+                    self._trigger_cancel()
+
             except socket.timeout:
                 continue
             except Exception:
