@@ -2,10 +2,14 @@ import threading
 from typing import Optional
 import numpy as np
 import sounddevice as sd
+from PySide6.QtCore import QObject, Signal
 
 
-class AudioRecorder:
+class AudioRecorder(QObject):
+    volume_signal = Signal(float)
+
     def __init__(self, sample_rate: int = 16000):
+        super().__init__()
         self.sample_rate = sample_rate
         self.is_recording = False
         self.audio_data = []
@@ -18,6 +22,9 @@ class AudioRecorder:
         if self.is_recording:
             with self._lock:
                 self.audio_data.append(indata.copy())
+            rms = float(np.sqrt(np.mean(indata**2)))
+            level = min(1.0, rms * 18.0)
+            self.volume_signal.emit(level)
 
     def start_recording(self):
         with self._lock:

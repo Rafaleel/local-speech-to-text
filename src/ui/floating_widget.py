@@ -1,7 +1,9 @@
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import Qt, Signal, QTimer
+
 from PySide6.QtGui import (
-    QColor, QPainter, QBrush, QPen, QIcon, QPixmap, QAction
+    QColor, QPainter, QBrush, QPen, QIcon, QPixmap, QAction, QLinearGradient
 )
+
 from PySide6.QtWidgets import (
     QWidget, QHBoxLayout, QLabel, QPushButton, QSystemTrayIcon, QMenu,
     QApplication
@@ -64,6 +66,76 @@ def _create_pin_icon(pinned: bool = False) -> QIcon:
     return QIcon(pixmap)
 
 
+class AudioWaveformWidget(QWidget):
+    """Custom widget rendering 5 centered animated equalizer bars."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setFixedSize(80, 22)
+        self._target_level = 0.0
+        self._current_levels = [0.12] * 5
+
+        self._timer = QTimer(self)
+        self._timer.setInterval(33)  # ~30 FPS
+        self._timer.timeout.connect(self._animate_step)
+
+    def set_volume_level(self, level: float):
+        self._target_level = level
+        if not self._timer.isActive():
+            self._timer.start()
+
+    def start_animating(self):
+        if not self._timer.isActive():
+            self._timer.start()
+
+    def stop_animating(self):
+        self._timer.stop()
+        self._target_level = 0.0
+        self._current_levels = [0.12] * 5
+        self.update()
+
+    def _animate_step(self):
+        variations = [0.75, 1.15, 1.4, 1.05, 0.8]
+        decay = 0.35
+        all_low = True
+
+        for i in range(5):
+            target = max(0.12, min(1.0, self._target_level * variations[i]))
+            self._current_levels[i] += (
+                target - self._current_levels[i]
+            ) * decay
+            if self._current_levels[i] > 0.15:
+                all_low = False
+
+        self.update()
+        if all_low and self._target_level <= 0.01:
+            self._timer.stop()
+
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+
+        # Red accent gradient for modern aesthetic
+        brush = QBrush(QColor("#EF4444"))
+        painter.setBrush(brush)
+        painter.setPen(Qt.PenStyle.NoPen)
+
+        w = self.width()
+        h = self.height()
+        bar_w = 4.5
+        spacing = 4.0
+        total_w = 5 * bar_w + 4 * spacing
+        start_x = (w - total_w) / 2.0
+
+        for i, lvl in enumerate(self._current_levels):
+            bar_h = max(4.0, h * lvl)
+            x = start_x + i * (bar_w + spacing)
+            y = (h - bar_h) / 2.0
+            painter.drawRoundedRect(x, y, bar_w, bar_h, 2.0, 2.0)
+
+        painter.end()
+
+
 class FloatingPillWidget(QWidget):
     open_history_requested = Signal()
     toggle_recording_requested = Signal()
@@ -82,8 +154,18 @@ class FloatingPillWidget(QWidget):
         # idle, recording, transcribing, success, error
         self.status_state = "idle"
 
+        # Shimmer animation for transcribing state
+        self._shimmer_offset = 0.0
+        self._shimmer_timer = QTimer(self)
+        self._shimmer_timer.setInterval(30)
+        self._shimmer_timer.timeout.connect(self._step_shimmer)
+
         self._init_ui()
         self._init_system_tray()
+
+    def _step_shimmer(self):
+        self._shimmer_offset = (self._shimmer_offset + 0.025) % 1.0
+        self.update()
 
     def _apply_window_flags(self):
         flags = Qt.WindowType.FramelessWindowHint | Qt.WindowType.Window
@@ -151,15 +233,15 @@ class FloatingPillWidget(QWidget):
         self.setFixedSize(350, 46)
 
         layout = QHBoxLayout(self)
-        layout.setContentsMargins(12, 4, 10, 4)
+        layout.setContentsMargins(18, 4, 10, 4)
         layout.setSpacing(6)
 
-        # Status Dot Indicator
-        self.dot_label = QLabel(self)
-        self.dot_label.setFixedSize(14, 14)
+        # Audio Waveform Equalizer Widget
+        self.waveform_widget = AudioWaveformWidget(self)
+        self.waveform_widget.hide()
 
         # Status Text (Portuguese user-facing text)
-        self.status_label = QLabel("Pronto (Ctrl+Espaço)", self)
+        self.status_label = QLabel("Pronto para Gravar", self)
         self.status_label.setObjectName("StatusText")
         self.status_label.setStyleSheet(
             "color: #94A3B8; font-size: 12px; font-weight: 500;"
@@ -215,54 +297,64 @@ class FloatingPillWidget(QWidget):
         """)
         self.btn_quit.clicked.connect(self.quit_requested.emit)
 
-        layout.addWidget(self.dot_label)
         layout.addWidget(self.status_label, 1)
+        layout.addWidget(
+            self.waveform_widget, 1, Qt.AlignmentFlag.AlignCenter
+        )
         layout.addWidget(self.btn_pin)
         layout.addWidget(self.btn_history)
         layout.addWidget(self.btn_quit)
 
-        self._update_dot_color("#38BDF8")
-
-    def _update_dot_color(self, hex_color: str):
-        pixmap = QPixmap(14, 14)
-        pixmap.fill(Qt.GlobalColor.transparent)
-        painter = QPainter(pixmap)
-        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-        painter.setBrush(QBrush(QColor(hex_color)))
-        painter.setPen(Qt.PenStyle.NoPen)
-        painter.drawEllipse(0, 0, 14, 14)
-        painter.end()
-        self.dot_label.setPixmap(pixmap)
-
-    def set_status(self, state: str, message: str):
+    def set_status(self, state: str, message: str = ""):
         self.status_state = state
-        self.status_label.setText(message)
 
-        if state == "idle":
-            self.status_label.setStyleSheet(
-                "color: #94A3B8; font-weight: 500;"
-            )
-            self._update_dot_color("#38BDF8")
-        elif state == "recording":
-            self.status_label.setStyleSheet(
-                "color: #EF4444; font-weight: 700;"
-            )
-            self._update_dot_color("#EF4444")
-        elif state == "transcribing":
-            self.status_label.setStyleSheet(
-                "color: #F59E0B; font-weight: 600;"
-            )
-            self._update_dot_color("#F59E0B")
-        elif state == "success":
-            self.status_label.setStyleSheet(
-                "color: #10B981; font-weight: 600;"
-            )
-            self._update_dot_color("#10B981")
-        elif state == "error":
-            self.status_label.setStyleSheet(
-                "color: #F87171; font-weight: 600;"
-            )
-            self._update_dot_color("#F87171")
+        if state == "transcribing":
+            if not self._shimmer_timer.isActive():
+                self._shimmer_timer.start()
+        else:
+            self._shimmer_timer.stop()
+            self._shimmer_offset = 0.0
+
+        if state == "recording":
+            self.status_label.hide()
+            self.waveform_widget.show()
+            self.waveform_widget.start_animating()
+        else:
+            self.waveform_widget.stop_animating()
+            self.waveform_widget.hide()
+            self.status_label.show()
+
+            if state == "idle":
+                self.status_label.setText("Pronto para Gravar")
+                self.status_label.setStyleSheet(
+                    "color: #94A3B8; font-weight: 500;"
+                )
+            elif state == "transcribing":
+                self.status_label.setText("Processando IA...")
+                self.status_label.setStyleSheet(
+                    "color: #F59E0B; font-weight: 600;"
+                )
+            elif state == "success":
+                self.status_label.setText("✓ Transcrição copiada!")
+                self.status_label.setStyleSheet(
+                    "color: #10B981; font-weight: 700;"
+                )
+            elif state == "error":
+                self.status_label.setText("✕ Erro na transcrição")
+                self.status_label.setStyleSheet(
+                    "color: #F87171; font-weight: 700;"
+                )
+            else:
+                self.status_label.setText(message if message else state)
+                self.status_label.setStyleSheet(
+                    "color: #94A3B8; font-weight: 500;"
+                )
+
+        self.update()
+
+    def update_volume_level(self, level: float):
+        if self.status_state == "recording":
+            self.waveform_widget.set_volume_level(level)
 
         self.update()
 
@@ -276,23 +368,44 @@ class FloatingPillWidget(QWidget):
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
 
-        # Render translucent glass background
+        # Base translucent glass background
+        rect = self.rect().adjusted(1, 1, -1, -1)
         bg_color = QColor(15, 23, 42, 240)
         border_color = QColor(255, 255, 255, 45)
 
         if self.status_state == "recording":
-            border_color = QColor(239, 68, 68, 200)
+            border_color = QColor(239, 68, 68, 220)
         elif self.status_state == "transcribing":
-            border_color = QColor(245, 158, 11, 200)
+            border_color = QColor(245, 158, 11, 220)
+        elif self.status_state == "success":
+            border_color = QColor(16, 185, 129, 220)
+        elif self.status_state == "error":
+            border_color = QColor(248, 113, 113, 220)
 
         painter.setBrush(QBrush(bg_color))
         painter.setPen(QPen(border_color, 1.5))
-        painter.drawRoundedRect(self.rect().adjusted(1, 1, -1, -1), 20, 20)
+        painter.drawRoundedRect(rect, 20, 20)
+
+        # Transcribing Glassmorphism Shimmer Light Sweep Overlay
+        if self.status_state == "transcribing":
+            shimmer_grad = QLinearGradient(0, 0, self.width(), 0)
+            off = self._shimmer_offset
+            shimmer_grad.setColorAt(
+                max(0.0, off - 0.2), QColor(245, 158, 11, 0)
+            )
+            shimmer_grad.setColorAt(off, QColor(245, 158, 11, 50))
+            shimmer_grad.setColorAt(
+                min(1.0, off + 0.2), QColor(245, 158, 11, 0)
+            )
+
+            painter.setBrush(QBrush(shimmer_grad))
+            painter.setPen(Qt.PenStyle.NoPen)
         painter.end()
 
     # Dragging logic with Wayland support via startSystemMove
     def mousePressEvent(self, event):
         if event.button() == Qt.MouseButton.LeftButton:
+
             win_handle = self.windowHandle()
             if win_handle and hasattr(win_handle, "startSystemMove"):
                 win_handle.startSystemMove()

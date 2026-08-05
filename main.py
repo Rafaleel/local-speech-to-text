@@ -37,14 +37,17 @@ class VoiceToTextApp(QObject):
         self.status_reset_timer = QTimer(self)
         self.status_reset_timer.setSingleShot(True)
         self.status_reset_timer.timeout.connect(
-            lambda: self.floating_pill.set_status(
-                "idle", "Pronto (Ctrl+Espaço)"
-            )
+            lambda: self.floating_pill.set_status("idle")
         )
 
         # UI Components
         self.floating_pill = FloatingPillWidget(db_manager=self.db)
         self.history_window = HistoryWindow(self.db)
+
+        # Connect Microphone Volume Stream to Floating Pill Waveform
+        self.recorder.volume_signal.connect(
+            self.floating_pill.update_volume_level
+        )
 
         # Load initial position and always_on_top settings
         is_top = self.db.get_setting("always_on_top", "true").lower() == "true"
@@ -141,7 +144,7 @@ class VoiceToTextApp(QObject):
         audio_data = self.recorder.stop_recording()
 
         if len(audio_data) == 0 or (len(audio_data) / 16000) < 0.5:
-            self.floating_pill.set_status("idle", "Pronto (Ctrl+Espaço)")
+            self.floating_pill.set_status("idle")
             print("[Main] Audio recording too short, discarded.", flush=True)
             return
 
