@@ -26,18 +26,24 @@ class AudioRecorder(QObject):
             level = min(1.0, rms * 18.0)
             self.volume_signal.emit(level)
 
-    def start_recording(self):
+    def start_recording(self, device=None):
         with self._lock:
             self.audio_data.clear()
-            self.is_recording = True
 
-        self._stream = sd.InputStream(
+        stream = sd.InputStream(
             samplerate=self.sample_rate,
             channels=1,
+            device=device,
             dtype='float32',
             callback=self._audio_callback
         )
-        self._stream.start()
+        try:
+            stream.start()
+        except Exception:
+            stream.close()
+            raise
+        self._stream = stream
+        self.is_recording = True
         print("[AudioRecorder] Recording started...", flush=True)
 
     def stop_recording(self) -> np.ndarray:

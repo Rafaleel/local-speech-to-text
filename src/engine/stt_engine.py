@@ -2,7 +2,6 @@ import ctypes
 import gc
 import glob
 import os
-import re
 import threading
 import time
 from typing import Optional
@@ -14,7 +13,11 @@ def _load_nvidia_libraries():
     """Dynamically load NVIDIA libraries (cublas, cudnn) installed via pip."""
     try:
         import site
-        for sp in site.getsitepackages():
+        import sys
+        search_dirs = list(site.getsitepackages())
+        if getattr(sys, "frozen", False):
+            search_dirs.insert(0, sys._MEIPASS)
+        for sp in search_dirs:
             nvidia_dir = os.path.join(sp, "nvidia")
             if os.path.exists(nvidia_dir):
                 for lib_file in glob.glob(
@@ -31,35 +34,6 @@ def _load_nvidia_libraries():
 _load_nvidia_libraries()
 
 
-def clean_hallucinated_closings(text: str) -> str:
-    """
-    Strips trailing hallucinated closing tokens only when appended
-    to the end of a longer sentence. If the text consists ONLY
-    of the hallucinated phrase, it is preserved.
-    """
-    if not text:
-        return text
-
-    pattern = re.compile(
-        r"(?:\.|\!|\?|\,)?\s*\b(?:tchau|tchau\s+tchau|obrigado|obrigada|"
-        r"inscreva-se(?:\s+no\s+canal)?|subtitles\s+by.*|"
-        r"thanks\s+for\s+watching)[.!?\s]*$",
-        re.IGNORECASE
-    )
-
-    match = pattern.search(text)
-    if not match:
-        return text
-
-    cleaned_text = pattern.sub("", text).strip()
-
-    # If stripping leaves nothing, it was the ONLY content, so we preserve it.
-    if not cleaned_text:
-        return text
-
-    return cleaned_text
-
-
 class ModelManager:
     _loaded_model = None
     _current_key = None
@@ -73,6 +47,8 @@ class ModelManager:
         device: str = "cuda",
         compute_type: str = "float16"
     ):
+        if model_size == "openai/whisper-large-v3":
+            model_size = "large-v3"
         with cls._lock:
             key = (model_size, device, compute_type)
             if cls._loaded_model is not None and cls._current_key == key:
@@ -112,7 +88,7 @@ class ModelManager:
         )
         model = WhisperModel(model_size, device="cpu", compute_type="int8")
         cls._loaded_model = model
-        cls._current_key = (model_size, "cpu", "int8")
+        cls._current_key = key
         cls._active_device = "cpu"
         print(
             f"[STTEngine] Model '{model_size}' loaded successfully on CPU.",
@@ -153,7 +129,8 @@ class TranscribeWorker(QThread):
         compute_type: str = "float16",
         vram_offload_policy: str = "never",
         language: str = "auto",
-        initial_prompt: Optional[str] = None
+        initial_prompt: Optional[str] = None,
+        hotwords: Optional[str] = None
     ):
         super().__init__()
         self.audio_data = audio_data
@@ -164,6 +141,7 @@ class TranscribeWorker(QThread):
         self.vram_offload_policy = vram_offload_policy
         self.language = language
         self.initial_prompt = initial_prompt
+        self.hotwords = hotwords
 
     def run(self):
         start_time = time.time()
@@ -174,7 +152,7 @@ class TranscribeWorker(QThread):
 
             duration = len(self.audio_data) / self.sample_rate
 
-            self.status_signal.emit("Fetching model...")
+            self.status_signal.emit("Preparando modelo…")
             model, active_device = ModelManager.get_model(
                 model_size=self.model_size,
                 device=self.device,
@@ -187,17 +165,7 @@ class TranscribeWorker(QThread):
             )
             self.status_signal.emit(status_msg)
 
-            if self.language == "auto":
-                transcribe_lang = None
-                prompt = self.initial_prompt or (
-                    "Transcreva o áudio no idioma falado sem traduzir. "
-                    "Maintain exact spoken language without translating."
-                )
-            else:
-                transcribe_lang = self.language
-                prompt = self.initial_prompt or (
-                    f"Direct transcription in {self.language}."
-                )
+            transcribe_lang = None if self.language == "auto" else self.language
 
             segments, info = model.transcribe(
                 self.audio_data,
@@ -205,30 +173,17 @@ class TranscribeWorker(QThread):
                 task="transcribe",
                 language=transcribe_lang,
                 condition_on_previous_text=False,
-                initial_prompt=prompt,
+                initial_prompt=self.initial_prompt,
+                hotwords=self.hotwords,
                 vad_filter=True,
                 vad_parameters=dict(min_silence_duration_ms=400),
                 no_speech_threshold=0.6
             )
-            segments = list(segments)
-
-            # If no speech probability is high, consider audio as silence
-            if getattr(info, 'no_speech_prob', 0.0) > 0.65:
-                text_parts = []
-            else:
-                text_parts = [segment.text.strip() for segment in segments]
-
-            full_text = " ".join(text_parts).strip()
-            full_text = clean_hallucinated_closings(full_text)
-
+            full_text = " ".join(segment.text.strip() for segment in segments).strip()
             elapsed = time.time() - start_time
-            ns_prob = getattr(info, 'no_speech_prob', 0.0)
             print(
-                f"[STTEngine] Transcription via {active_device.upper()} "
-                f"completed in {elapsed:.2f}s (Model: {self.model_size} | "
-                f"Language: {info.language.upper()}, "
-                f"Prob: {info.language_probability:.2f}, "
-                f"NoSpeechProb: {ns_prob:.2f}) -> \"{full_text}\"",
+                f"[STTEngine] {active_device.upper()} | {self.model_size} | "
+                f"{info.language} | {elapsed:.2f}s",
                 flush=True
             )
 

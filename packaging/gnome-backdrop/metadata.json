@@ -1,0 +1,7 @@
+{
+  "uuid": "voice-to-text-backdrop@local",
+  "name": "Voice to Text Backdrop",
+  "description": "Blurs the desktop directly behind the Voice to Text recording pill.",
+  "shell-version": ["51"],
+  "version": 1
+}
