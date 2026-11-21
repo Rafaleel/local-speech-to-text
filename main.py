@@ -1,11 +1,13 @@
 import os
 import sys
+from pathlib import Path
 
 # On Linux Wayland/GNOME, force xcb (XWayland) for window positioning
 if sys.platform == "linux" and os.environ.get("WAYLAND_DISPLAY"):
     os.environ.setdefault("QT_QPA_PLATFORM", "xcb")
 
 from PySide6.QtCore import QObject, QTimer, Slot
+from PySide6.QtGui import QIcon
 from PySide6.QtWidgets import QApplication, QInputDialog
 
 from src.audio.audio_cues import (
@@ -27,6 +29,8 @@ class VoiceToTextApp(QObject):
         super().__init__()
         self.app = QApplication(sys.argv)
         self.app.setQuitOnLastWindowClosed(False)
+        self.app.setDesktopFileName("voice-to-text")  # matches the .desktop entry so GNOME shows its icon
+        self.app.setWindowIcon(QIcon(str(Path(__file__).resolve().parent / "assets" / "icon.svg")))
 
         # Core Services
         self.db = DatabaseManager()

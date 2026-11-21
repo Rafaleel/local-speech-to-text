@@ -33,7 +33,9 @@ rm -rf "$INSTALL_DIR"
 mkdir -p "$(dirname "$INSTALL_DIR")" "$HOME/.local/bin" "$DATA_HOME/applications" "$DATA_HOME/icons/hicolor/scalable/apps"
 cp -a build/dist/voice-to-text "$INSTALL_DIR"
 ln -sf "$INSTALL_DIR/voice-to-text" "$HOME/.local/bin/voice-to-text"
-cp assets/icon.svg "$DATA_HOME/icons/hicolor/scalable/apps/voice-to-text.svg"
+# New icon name: GNOME Shell caches icons by name until the session restarts, so a new name shows the new artwork at once
+rm -f "$DATA_HOME/icons/hicolor/scalable/apps/voice-to-text.svg"
+cp assets/icon.svg "$DATA_HOME/icons/hicolor/scalable/apps/voice-to-text-app.svg"
 
 # Carry over history/settings from the dev database on first install
 if [[ -f transcriptions.db && ! -f "$DATA_HOME/voice-to-text/transcriptions.db" ]]; then
@@ -49,11 +51,12 @@ Name=Voice to Text
 GenericName=Speech to Text
 Comment=Local Whisper transcription with a global hotkey
 Exec=$INSTALL_DIR/voice-to-text
-Icon=voice-to-text
+Icon=voice-to-text-app
 Terminal=false
 Categories=Utility;
 Keywords=voice;speech;transcription;whisper;dictation;voz;transcrição;
 StartupNotify=false
+StartupWMClass=voice-to-text
 EOF
 
 update-desktop-database "$DATA_HOME/applications" 2>/dev/null || true
