@@ -123,8 +123,8 @@ The theme you choose is saved in the database (`theme` setting) and restored the
 ### 2. Clone the repository and create a virtual environment
 
 ```bash
-git clone https://github.com/your-username/Voice-to-Text.git
-cd Voice-to-Text
+git clone https://github.com/Rafaleel/local-speech-to-text.git
+cd local-speech-to-text
 
 python3 -m venv .venv
 source .venv/bin/activate
