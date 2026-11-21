@@ -1,12 +1,20 @@
 import os
 import sqlite3
+import sys
 from contextlib import closing
 from typing import List, Dict, Any, Optional
 
 
 class DatabaseManager:
     def __init__(self, db_path: Optional[str] = None):
-        if db_path is None:
+        if db_path is None and getattr(sys, "frozen", False):
+            data_home = os.environ.get("XDG_DATA_HOME") or os.path.expanduser(
+                "~/.local/share"
+            )
+            base_dir = os.path.join(data_home, "voice-to-text")
+            os.makedirs(base_dir, exist_ok=True)
+            db_path = os.path.join(base_dir, "transcriptions.db")
+        elif db_path is None:
             base_dir = os.path.dirname(
                 os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
             )
@@ -86,24 +94,34 @@ class DatabaseManager:
                 return cursor.lastrowid
 
     def get_transcriptions(
-        self, search_query: Optional[str] = None, limit: int = 100
+        self, search_query: Optional[str] = None, limit: int = 100, offset: int = 0
     ) -> List[Dict[str, Any]]:
         with closing(self._get_connection()) as conn:
             cursor = conn.cursor()
             if search_query:
                 cursor.execute(
                     "SELECT * FROM transcriptions WHERE text LIKE ? "
-                    "ORDER BY created_at DESC LIMIT ?;",
-                    (f"%{search_query}%", limit)
+                    "ORDER BY created_at DESC, id DESC LIMIT ? OFFSET ?;",
+                    (f"%{search_query}%", limit, offset)
                 )
             else:
                 cursor.execute(
-                    "SELECT * FROM transcriptions ORDER BY created_at DESC "
-                    "LIMIT ?;",
-                    (limit,)
+                    "SELECT * FROM transcriptions ORDER BY created_at DESC, id DESC "
+                    "LIMIT ? OFFSET ?;",
+                    (limit, offset)
                 )
             rows = cursor.fetchall()
             return [dict(row) for row in rows]
+
+    def update_transcription(self, item_id: int, text: str) -> bool:
+        text = text.strip()
+        if not text:
+            return False
+        with closing(self._get_connection()) as conn, conn:
+            result = conn.execute(
+                "UPDATE transcriptions SET text = ? WHERE id = ?", (text, item_id)
+            )
+            return result.rowcount == 1
 
     def delete_transcription(self, item_id: int) -> bool:
         with closing(self._get_connection()) as conn:
@@ -114,6 +132,17 @@ class DatabaseManager:
                     (item_id,)
                 )
                 return cursor.rowcount > 0
+
+    def restore_transcription(self, item: Dict[str, Any]):
+        """Restore the last deleted entry without changing its timestamp."""
+        with closing(self._get_connection()) as conn:
+            with conn:
+                conn.execute(
+                    "INSERT INTO transcriptions "
+                    "(id, text, language, duration_seconds, created_at) VALUES (?, ?, ?, ?, ?)",
+                    (item["id"], item["text"], item["language"],
+                     item["duration_seconds"], item["created_at"]),
+                )
 
     def clear_history(self) -> bool:
         with closing(self._get_connection()) as conn:

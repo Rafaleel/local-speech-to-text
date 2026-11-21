@@ -6,7 +6,7 @@ if sys.platform == "linux" and os.environ.get("WAYLAND_DISPLAY"):
     os.environ.setdefault("QT_QPA_PLATFORM", "xcb")
 
 from PySide6.QtCore import QObject, QTimer, Slot
-from PySide6.QtWidgets import QApplication
+from PySide6.QtWidgets import QApplication, QInputDialog
 
 from src.audio.audio_cues import (
     play_start_sound, play_stop_sound, play_cancel_sound
@@ -16,7 +16,8 @@ from src.audio.recorder import AudioRecorder
 from src.engine.stt_engine import TranscribeWorker, ModelManager
 from src.utils.injector import TextInjector
 from src.utils.hotkey import GlobalHotkeyListener
-from src.ui.styles import DARK_THEME_QSS
+from src.ui import themes
+from src.ui.styles import build_qss
 from src.ui.floating_widget import FloatingPillWidget
 from src.ui.history_window import HistoryWindow
 
@@ -25,20 +26,21 @@ class VoiceToTextApp(QObject):
     def __init__(self):
         super().__init__()
         self.app = QApplication(sys.argv)
-        self.app.setStyleSheet(DARK_THEME_QSS)
         self.app.setQuitOnLastWindowClosed(False)
 
         # Core Services
         self.db = DatabaseManager()
+        themes.set_active(self.db.get_setting("theme", themes.DEFAULT_THEME))
+        self.app.setStyleSheet(build_qss(themes.active()))
         self.recorder = AudioRecorder()
         self.transcribe_worker: TranscribeWorker = None
+        self.review_dialog = None
+        self.retry_audio = None
 
         # Status reset timer to manage pill status timeouts safely
         self.status_reset_timer = QTimer(self)
         self.status_reset_timer.setSingleShot(True)
-        self.status_reset_timer.timeout.connect(
-            lambda: self.floating_pill.set_status("idle")
-        )
+        self.status_reset_timer.timeout.connect(self._reset_pill_status)
 
         # UI Components
         self.floating_pill = FloatingPillWidget(db_manager=self.db)
@@ -67,10 +69,15 @@ class VoiceToTextApp(QObject):
         self.floating_pill.open_history_requested.connect(
             self.show_history_window
         )
+        self.floating_pill.open_settings_requested.connect(
+            self.show_settings_window
+        )
         self.floating_pill.toggle_recording_requested.connect(
             self.toggle_recording
         )
         self.floating_pill.quit_requested.connect(self.quit_app)
+        self.floating_pill.retry_requested.connect(self.retry_transcription)
+        self.floating_pill.cancel_recording_requested.connect(self.cancel_recording)
         self.floating_pill.always_on_top_changed.connect(
             lambda enable: self.db.set_setting(
                 "always_on_top", "true" if enable else "false"
@@ -78,6 +85,7 @@ class VoiceToTextApp(QObject):
         )
 
         self.history_window.settings_changed.connect(self.apply_settings)
+        self.history_window.theme_changed.connect(self.apply_theme)
 
         # Global Hotkey Listener
         hotkey_mode = self.db.get_setting("hotkey_mode", "toggle")
@@ -94,6 +102,14 @@ class VoiceToTextApp(QObject):
 
     def show_history_window(self):
         self.history_window.refresh_history()
+        self.history_window.show_page(0)
+        self._show_workspace()
+
+    def show_settings_window(self):
+        self.history_window.show_page(1)
+        self._show_workspace()
+
+    def _show_workspace(self):
         self.history_window.show()
         self.history_window.raise_()
         self.history_window.activateWindow()
@@ -105,8 +121,11 @@ class VoiceToTextApp(QObject):
         else:
             self.start_recording()
 
+    @Slot()
     def start_recording(self):
-        if self.transcribe_worker and self.transcribe_worker.isRunning():
+        if self.review_dialog is not None or self.recorder.is_recording:
+            return
+        if self.transcribe_worker is not None:
             print(
                 "[Main] Previous transcription still in progress...",
                 flush=True
@@ -115,12 +134,21 @@ class VoiceToTextApp(QObject):
 
         self.vram_unload_timer.stop()
         self.status_reset_timer.stop()
-        self.recorder.start_recording()
+        try:
+            self.recorder.start_recording(self.db.get_setting("microphone", "") or None)
+        except Exception as error:
+            self.floating_pill.set_status(
+                "error", f"Não foi possível abrir o microfone. {error}"
+            )
+            self._manage_vram_offload()
+            return
+        self.retry_audio = None
         self.floating_pill.set_status("recording", "Gravando...")
 
         if self.db.get_setting("sound_effects", "true").lower() == "true":
             play_start_sound()
 
+    @Slot()
     def cancel_recording(self):
         if not self.recorder.is_recording:
             return
@@ -134,6 +162,7 @@ class VoiceToTextApp(QObject):
 
         self.status_reset_timer.start(2500)
 
+    @Slot()
     def stop_recording(self):
         if not self.recorder.is_recording:
             return
@@ -144,11 +173,23 @@ class VoiceToTextApp(QObject):
         audio_data = self.recorder.stop_recording()
 
         if len(audio_data) == 0 or (len(audio_data) / 16000) < 0.5:
-            self.floating_pill.set_status("idle")
+            self.floating_pill.set_status("idle", "Áudio muito curto")
+            self.status_reset_timer.start(3000)
             print("[Main] Audio recording too short, discarded.", flush=True)
             return
 
-        self.floating_pill.set_status("transcribing", "Transcrevendo...")
+        self._transcribe(audio_data)
+
+    @Slot()
+    def retry_transcription(self):
+        if self.retry_audio is None or self.transcribe_worker is not None:
+            return
+        self._transcribe(self.retry_audio)
+
+    def _transcribe(self, audio_data):
+        self.retry_audio = audio_data
+        self.vram_unload_timer.stop()
+        self.floating_pill.set_status("transcribing", "Preparando modelo…")
 
         # Load current settings for STT
         model_size = self.db.get_setting("model_size", "large-v3-turbo")
@@ -165,7 +206,8 @@ class VoiceToTextApp(QObject):
             device=device,
             compute_type=compute_type,
             vram_offload_policy=vram_policy,
-            language=language
+            language=language,
+            hotwords=self.db.get_setting("hotwords", "") or None
         )
 
         self.transcribe_worker.finished_signal.connect(
@@ -174,51 +216,103 @@ class VoiceToTextApp(QObject):
         self.transcribe_worker.failed_signal.connect(
             self._on_transcription_failed
         )
-        self.transcribe_worker.status_signal.connect(
-            lambda msg: self.floating_pill.set_status("transcribing", msg)
-        )
+        self.transcribe_worker.status_signal.connect(self._on_transcription_status)
+        self.transcribe_worker.finished.connect(self.transcribe_worker.deleteLater)
+        self.transcribe_worker.finished.connect(self._worker_finished)
         self.transcribe_worker.start()
+
+    @Slot(str)
+    def _on_transcription_status(self, message):
+        self.floating_pill.set_status("transcribing", message)
+
+    @Slot()
+    def _worker_finished(self):
+        self.transcribe_worker = None
 
     @Slot(str, str, float)
     def _on_transcription_finished(
         self, text: str, language: str, duration: float
     ):
+        self.retry_audio = None
+        if text and self.db.get_setting("review_before_copy", "false") == "true":
+            self._review_text(text, language, duration)
+            self._manage_vram_offload()
+            return
+        self._deliver_transcription(text, language, duration)
+        self._manage_vram_offload()
+
+    def _review_text(self, text: str, language: str, duration: float):
+        dialog = QInputDialog(self.floating_pill)
+        dialog.setWindowTitle("Revisar ditado")
+        dialog.setLabelText("Edite o texto antes de copiar.")
+        dialog.setOption(QInputDialog.InputDialogOption.UsePlainTextEditForTextInput)
+        dialog.setOkButtonText("Copiar")
+        dialog.setCancelButtonText("Descartar")
+        dialog.setTextValue(text)
+        dialog.resize(480, 280)
+        self.review_dialog = dialog
+        self.floating_pill.set_status("review", "Revise o texto")
+        dialog.textValueSelected.connect(
+            lambda edited: self._deliver_transcription(edited.strip(), language, duration, copy=True)
+        )
+        dialog.rejected.connect(lambda: self.floating_pill.set_status("idle"))
+        dialog.finished.connect(self._close_review)
+        dialog.open()
+
+    @Slot()
+    def _close_review(self):
+        self.review_dialog.deleteLater()
+        self.review_dialog = None
+
+    def _deliver_transcription(self, text, language, duration, *, copy=False):
         if text:
-            print(f"[Main] Transcription saved: \"{text}\"", flush=True)
-
-            # Save to SQLite DB
-            self.db.add_transcription(
-                text=text,
-                language=language,
-                duration_seconds=duration
-            )
-
-            # Copy to clipboard if enabled
-            if self.db.get_setting(
-                "copy_to_clipboard", "true"
-            ).lower() == "true":
-                TextInjector.copy_to_clipboard(text)
-                self.floating_pill.set_status("success", "Copiado!")
+            save = self.db.get_setting("save_history", "true") == "true"
+            if save:
+                try:
+                    self.db.add_transcription(text, language, duration)
+                except Exception as error:
+                    self.floating_pill.set_status(
+                        "error", f"Não foi possível salvar no histórico. {error}"
+                    )
+                    if copy or self.db.get_setting("copy_to_clipboard", "true") == "true":
+                        TextInjector.copy_to_clipboard(text)
+                    return
+                if self.history_window.isVisible():
+                    self.history_window.refresh_history()
+            if copy or self.db.get_setting("copy_to_clipboard", "true") == "true":
+                copied = TextInjector.copy_to_clipboard(text)
+                if copied:
+                    self.floating_pill.set_status("success", "Texto copiado")
+                else:
+                    message = (
+                        "Texto salvo no histórico, mas não foi possível copiar."
+                        if save else "Não foi possível copiar o texto."
+                    )
+                    self.floating_pill.set_status("error", message)
+            elif save:
+                self.floating_pill.set_status("success", "Salvo no histórico")
             else:
-                self.floating_pill.set_status("success", "Concluído!")
-
-            # Always refresh history window list
-            self.history_window.refresh_history()
+                self.floating_pill.set_status("idle", "Histórico e cópia desativados")
         else:
-            print(
-                "[Main] Warning: No speech detected in recording.", flush=True
-            )
             self.floating_pill.set_status("idle", "Nenhum texto detectado")
 
-        # Reset pill status back to idle after 3 seconds
-        self.status_reset_timer.start(3000)
-        self._manage_vram_offload()
+        if self.floating_pill.status_state != "error":
+            self.status_reset_timer.start(3000)
+
+    @Slot()
+    def _reset_pill_status(self):
+        if self.floating_pill.status_state == "success":
+            self.floating_pill.set_status("settling")
+            self.status_reset_timer.start(650)
+        else:
+            self.floating_pill.set_status("idle")
 
     @Slot(str)
     def _on_transcription_failed(self, error_msg: str):
-        self.floating_pill.set_status("error", "Erro na transcrição")
+        self.floating_pill.set_status("error", error_msg)
+        self.floating_pill.retry_action.setVisible(self.retry_audio is not None)
         print(f"[Main] Failure: {error_msg}", flush=True)
-        self.status_reset_timer.start(4000)
+        self.status_reset_timer.stop()
         self._manage_vram_offload()
 
     def _manage_vram_offload(self):
@@ -231,6 +325,13 @@ class VoiceToTextApp(QObject):
         elif policy in ["5s", "15s", "30s"]:
             seconds = int(policy.replace("s", ""))
             self.vram_unload_timer.start(seconds * 1000)
+
+    def apply_theme(self, key: str):
+        self.db.set_setting("theme", themes.set_active(key))
+        self.app.setStyleSheet(build_qss(themes.active()))
+        self.floating_pill.apply_theme()
+        self.floating_pill.apply_position_preset(self.db.get_setting("pill_position", "bottom"))
+        self.history_window.apply_theme()
 
     def apply_settings(self):
         new_mode = self.db.get_setting("hotkey_mode", "toggle")
@@ -250,6 +351,12 @@ class VoiceToTextApp(QObject):
 
     def quit_app(self):
         self.hotkey_listener.stop()
+        if self.recorder.is_recording:
+            self.recorder.stop_recording()
+        if self.transcribe_worker is not None:
+            self.transcribe_worker.finished.connect(self.app.quit)
+            self.floating_pill.set_status("transcribing", "Encerrando após a transcrição…")
+            return
         self.app.quit()
 
     def run(self):

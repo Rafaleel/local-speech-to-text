@@ -44,3 +44,6 @@ htmlcov/
 # Operating System Files
 .DS_Store
 Thumbs.db
+
+# PyInstaller build output
+build/
